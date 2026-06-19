@@ -1,0 +1,15 @@
+{
+  "name": "meili-indexer",
+  "version": "1.0.0",
+  "description": "Автооновлення пошуку Meilisearch з фіду Horoshop",
+  "main": "indexer.js",
+  "scripts": {
+    "start": "node indexer.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.9.3"
+  }
+}
