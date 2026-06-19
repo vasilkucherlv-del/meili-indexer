@@ -16,7 +16,6 @@ function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
 
 async function readSource(src){
   if (/^https?:\/\//.test(src)) {
-    // браузероподібний User-Agent, бо Horoshop блокує "ботів"
     const r = await fetch(src, { headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
       'Accept': 'application/xml,text/xml,*/*'
@@ -27,11 +26,28 @@ async function readSource(src){
   return fs.readFileSync(src, 'utf8');
 }
 
+// будує мапу id -> {name, parent} з блоку <categories>
+function buildCategoryMap(shop){
+  let cats = (shop.categories && shop.categories.category) || [];
+  if (!Array.isArray(cats)) cats = [cats];
+  const map = {};
+  for (const c of cats){
+    if (c == null) continue;
+    if (typeof c !== 'object'){ continue; }
+    const id = String(c['@_id'] != null ? c['@_id'] : '');
+    const name = clean(c['#text'] != null ? c['#text'] : (c.__cdata != null ? c.__cdata : ''));
+    if (id) map[id] = { name: name, parent: (c['@_parentId'] != null ? String(c['@_parentId']) : null) };
+  }
+  return map;
+}
+
 // XML -> масив документів для Meilisearch
 function toDocs(xml){
-  const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata' });
+  const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
   const data = parser.parse(xml);
   const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
+  const catMap = buildCategoryMap(shop);
+
   let offers = shop.offers?.offer || [];
   if (!Array.isArray(offers)) offers = [offers];
 
@@ -40,16 +56,29 @@ function toDocs(xml){
     const desc = clean(o.description && (o.description.__cdata ?? o.description));
     let pic = o.picture;
     if (Array.isArray(pic)) pic = pic[0];
+
+    let cid = o.categoryId;
+    if (Array.isArray(cid)) cid = cid[0];
+    cid = (cid != null ? String(cid).trim() : '');
+    const cat = catMap[cid] ? catMap[cid].name : '';
+    // батьківська категорія (для майбутнього групування), якщо є
+    let parentName = '';
+    if (catMap[cid] && catMap[cid].parent && catMap[catMap[cid].parent]) {
+      parentName = catMap[catMap[cid].parent].name;
+    }
+
     return {
       id:          String(o['@_id']),
       sku:         clean(o.vendorCode),
       name:        name,
       vendor:      clean(o.vendor),
+      category:    cat,
+      categoryParent: parentName,
       price:       Number(o.price) || 0,
       url:         clean(o.url),
       picture:     clean(pic),
       available:   String(o['@_available']) === 'true',
-      description: desc            // індексується для пошуку, але не показується в результатах
+      description: desc
     };
   }).filter(function(d){ return d.id && d.name; });
 }
@@ -82,15 +111,20 @@ async function main(){
   const xml = await readSource(FEED);
   const docs = toDocs(xml);
   console.log('Товарів у фіді:', docs.length);
+
+  const catset = new Set(docs.map(function(d){ return d.category; }).filter(Boolean));
+  console.log('Категорій знайдено:', catset.size, '| напр.:', Array.from(catset).slice(0,5).join(' | '));
+
   if (!docs.length) { console.error('У фіді не знайдено товарів — перевір формат.'); process.exit(1); }
 
-  try { await meili('POST','/indexes', { uid: INDEX, primaryKey: 'id' }); } catch(e) { /* можливо вже існує */ }
+  try { await meili('POST','/indexes', { uid: INDEX, primaryKey: 'id' }); } catch(e) {}
 
   console.log('Налаштовую пошукові поля…');
   const s = await meili('PATCH','/indexes/'+INDEX+'/settings', {
-    searchableAttributes: ['name','vendor','sku','description'],
-    filterableAttributes: ['vendor','available'],
-    displayedAttributes:  ['id','sku','name','vendor','price','url','picture','available']
+    searchableAttributes: ['name','vendor','sku','category','description'],
+    filterableAttributes: ['vendor','available','category','categoryParent'],
+    sortableAttributes:   ['price'],
+    displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available']
   });
   await waitTask(s.taskUid);
 
@@ -104,5 +138,5 @@ async function main(){
   console.log('Готово ✔ Оновлено товарів:', docs.length);
 }
 
-module.exports = { toDocs };
+module.exports = { toDocs, buildCategoryMap };
 if (require.main === module) main().catch(function(e){ console.error('Помилка:', e.message); process.exit(1); });
