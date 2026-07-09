@@ -14,19 +14,26 @@ const INDEX      = process.env.MEILI_INDEX || 'products';
 
 function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
 
-// Нормалізація розмірів: символи множення (× · * x/х лат./кир.) між цифрами -> 'x'.
-// Роздільник зберігається, тому 30*52*10 -> 30x52x10, а парт-номер 305210 лишається окремим.
+// Канонічний розмір: групу «число (× число){1..3}» зводимо до ВПОРЯДКОВАНОГО набору
+// чисел через 'x', десятковий роздільник -> 'p'. Порядок і символ множення неважливі:
+//   12,5*5*32  =  5*12,5*32  =  5x12,5x32  ->  5x12p5x32
+//   30*52*10   =  10x52x30              ->  10x30x52
+// Парт-номер 305210 (без роздільника) не чіпається; списки кодів через кому/плюс — теж.
 function normDims(s){
   s = String(s == null ? '' : s);
-  var prev;
-  do { prev = s; s = s.replace(/(\d)[ \t]*[*x×хХ·∙•⋅✕✖⨯]+[ \t]*(\d)/gi, '$1x$2'); } while (s !== prev);
-  return s;
+  return s.replace(/(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, function(full){
+    var nums = full.split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*/i)
+      .map(function(t){ return parseFloat(t.replace(',', '.')); })
+      .filter(function(v){ return !isNaN(v); });
+    if (nums.length < 2) return full;
+    nums.sort(function(a, b){ return a - b; });
+    return nums.map(function(v){ return String(v).replace('.', 'p'); }).join('x');
+  });
 }
-// Витягує нормалізовані токени розмірів (напр. "30x52x10") з назви+опису.
-// Бере лише схоже на розмір: 2-4 числа по 1-4 цифри, з межами (не фрагмент моделі/коду).
+// Витягує канонічні токени розмірів (напр. "5x12p5x32", "10x30x52") з назви.
 function dimsOf(text){
   var n = normDims(String(text == null ? '' : text).toLowerCase());
-  var seen = {}, out = [], re = /(?<![\dx])\d{1,4}(?:x\d{1,4}){1,3}(?![\dx])/g, m;
+  var seen = {}, out = [], re = /\d+(?:p\d+)?(?:x\d+(?:p\d+)?){1,3}/g, m;
   while ((m = re.exec(n))) { if (!seen[m[0]]) { seen[m[0]] = 1; out.push(m[0]); } }
   return out.join(' ');
 }
@@ -162,5 +169,5 @@ async function main(){
   console.log('Готово ✔ Оновлено товарів:', docs.length);
 }
 
-module.exports = { toDocs, buildCategoryMap };
+module.exports = { toDocs, buildCategoryMap, normDims, dimsOf };
 if (require.main === module) main().catch(function(e){ console.error('Помилка:', e.message); process.exit(1); });
