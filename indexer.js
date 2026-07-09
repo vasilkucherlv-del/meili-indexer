@@ -30,11 +30,32 @@ function normDims(s){
     return nums.map(function(v){ return String(v).replace('.', 'p'); }).join('x');
   });
 }
-// Витягує канонічні токени розмірів (напр. "5x12p5x32", "10x30x52") з назви.
+// Усі впорядковані підкомбінації (розміру 2..n) набору чисел -> канонічні токени.
+// Це дає пошук за ЧАСТИНОЮ розміру: 37*66*9,5 -> "37x66", "9p5x37", "9p5x66", "9p5x37x66".
+function dimCombos(nums){
+  var res = [], n = nums.length, idx = [];
+  function rec(start, k){
+    if (idx.length === k) {
+      res.push(idx.map(function(i){ return nums[i]; }).sort(function(a, b){ return a - b; })
+                  .map(function(v){ return String(v).replace('.', 'p'); }).join('x'));
+      return;
+    }
+    for (var i = start; i < n; i++) { idx.push(i); rec(i + 1, k); idx.pop(); }
+  }
+  for (var k = 2; k <= n; k++) rec(0, k);
+  return res;
+}
+// Витягує токени розмірів (повний + усі підкомбінації) з назви.
 function dimsOf(text){
-  var n = normDims(String(text == null ? '' : text).toLowerCase());
-  var seen = {}, out = [], re = /\d+(?:p\d+)?(?:x\d+(?:p\d+)?){1,3}/g, m;
-  while ((m = re.exec(n))) { if (!seen[m[0]]) { seen[m[0]] = 1; out.push(m[0]); } }
+  var s = String(text == null ? '' : text).toLowerCase();
+  var seen = {}, out = [], re = /(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, m;
+  while ((m = re.exec(s))) {
+    var nums = m[0].split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*/i)
+      .map(function(t){ return parseFloat(t.replace(',', '.')); })
+      .filter(function(v){ return !isNaN(v); });
+    if (nums.length < 2) continue;
+    dimCombos(nums).forEach(function(tok){ if (!seen[tok]) { seen[tok] = 1; out.push(tok); } });
+  }
   return out.join(' ');
 }
 
