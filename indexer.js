@@ -129,6 +129,37 @@ function toDocs(xml){
   }).filter(function(d){ return d.id && d.name; });
 }
 
+const SETTINGS = {
+  // sku і dims — перші: пріоритет пошуку за артикулом і розміром
+  searchableAttributes: ['sku','dims','name','vendor','category','description'],
+  filterableAttributes: ['vendor','available','category','categoryParent'],
+  sortableAttributes:   ['price','available'],
+  // релевантність веде; наявність — як сортування нижчого пріоритету (тай-брейк)
+  rankingRules:         ['words','typo','proximity','attribute','sort','exactness'],
+  displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
+  // без одруківок на кодах/розмірах; знято ліміт 1000
+  typoTolerance:        { enabled:true, disableOnAttributes:['sku','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+  pagination:           { maxTotalHits: 100000 }
+};
+
+// ── ГАРД: не дати битому/анти-бот фіду затерти пошук ──
+// Фід має бути XML з товарами; інакше — не чіпаємо індекс.
+function assertFeedSane(xml){
+  if (typeof xml !== 'string' || xml.indexOf('<offer') === -1) {
+    throw new Error('Фід не містить <offer> — віддано не XML (анти-бот заглушка або збій експорту). Індекс НЕ змінено.');
+  }
+}
+// Кількість товарів має бути адекватна (абсолютний мінімум + без різкого падіння).
+function assertCountsSane(newCount, currentCount, minDocs, maxDrop){
+  if (newCount < minDocs) {
+    throw new Error('Замало товарів (' + newCount + ' < ' + minDocs + ') — фід підозрілий. Індекс НЕ змінено.');
+  }
+  if (currentCount && newCount < currentCount * (1 - maxDrop)) {
+    throw new Error('Різке падіння кількості (' + currentCount + ' → ' + newCount + ', більше ' +
+      Math.round(maxDrop*100) + '%) — фід підозрілий. Індекс НЕ змінено.');
+  }
+}
+
 async function meili(method, path, body){
   const r = await fetch(MEILI_HOST + path, {
     method,
@@ -136,15 +167,37 @@ async function meili(method, path, body){
     body: body ? JSON.stringify(body) : undefined
   });
   const t = await r.text(); const d = t ? JSON.parse(t) : {};
-  if (!r.ok) throw new Error(d.message || ('HTTP ' + r.status));
+  if (!r.ok) { const e = new Error(d.message || ('HTTP ' + r.status)); e.status = r.status; throw e; }
   return d;
 }
 async function waitTask(uid){
+  if (uid == null) return;
   for (let i=0;i<600;i++){
     const t = await meili('GET','/tasks/'+uid);
     if (t.status === 'succeeded') return;
     if (t.status === 'failed') throw new Error('Завдання не виконалось: ' + JSON.stringify(t.error));
     await new Promise(function(res){ setTimeout(res, 800); });
+  }
+  throw new Error('Завдання ' + uid + ' не завершилось вчасно');
+}
+async function docCount(uid){
+  try { const s = await meili('GET','/indexes/'+uid+'/stats'); return s.numberOfDocuments || 0; }
+  catch(e){ if (e.status === 404) return null; throw e; }
+}
+async function ensureIndex(uid){
+  try { const r = await meili('POST','/indexes', { uid: uid, primaryKey: 'id' }); await waitTask(r.taskUid); }
+  catch(e){ if (!/already exists|index_already_exists/i.test(e.message)) { /* ігноруємо «вже існує» */ } }
+}
+async function deleteIndex(uid){
+  try { const r = await meili('DELETE','/indexes/'+uid); await waitTask(r.taskUid); } catch(e){}
+}
+async function uploadDocs(uid, docs){
+  const BATCH = 1000;
+  for (let i=0;i<docs.length;i+=BATCH){
+    const part = docs.slice(i, i+BATCH);
+    const r = await meili('POST','/indexes/'+uid+'/documents', part);
+    await waitTask(r.taskUid);
+    console.log('  залито', Math.min(i+BATCH, docs.length), '/', docs.length);
   }
 }
 
@@ -155,40 +208,41 @@ async function main(){
 
   console.log('Читаю фід…');
   const xml = await readSource(FEED);
+  assertFeedSane(xml);                      // гард #1: це справді фід?
   const docs = toDocs(xml);
   console.log('Товарів у фіді:', docs.length);
 
   const catset = new Set(docs.map(function(d){ return d.category; }).filter(Boolean));
   console.log('Категорій знайдено:', catset.size, '| напр.:', Array.from(catset).slice(0,5).join(' | '));
 
-  if (!docs.length) { console.error('У фіді не знайдено товарів — перевір формат.'); process.exit(1); }
+  // гард #2: кількість адекватна і без різкого падіння?
+  const current = await docCount(INDEX);    // null якщо індексу ще нема
+  const MIN_DOCS = parseInt(process.env.MIN_DOCS || '1500', 10);
+  const MAX_DROP = parseFloat(process.env.MAX_DROP_RATIO || '0.4');
+  assertCountsSane(docs.length, current, MIN_DOCS, MAX_DROP);
+  console.log('Гард пройдено (було ' + (current == null ? '—' : current) + ', стане ' + docs.length + ').');
 
-  try { await meili('POST','/indexes', { uid: INDEX, primaryKey: 'id' }); } catch(e) {}
-
+  // ── Будуємо у тимчасовий індекс і атомарно підміняємо ──
+  // Це робить оновлення атомарним (пошук не бачить напів-стану) І прибирає зняті товари.
+  const TMP = INDEX + '_build';
+  await ensureIndex(INDEX);                 // щоб swap завжди мав обидва індекси
+  await deleteIndex(TMP);                   // прибрати недобудований з попереднього разу
+  await ensureIndex(TMP);
   console.log('Налаштовую пошукові поля…');
-  const s = await meili('PATCH','/indexes/'+INDEX+'/settings', {
-    // sku і dims — перші: пріоритет пошуку за артикулом і розміром
-    searchableAttributes: ['sku','dims','name','vendor','category','description'],
-    filterableAttributes: ['vendor','available','category','categoryParent'],
-    sortableAttributes:   ['price','available'],
-    // релевантність веде; наявність — як сортування нижчого пріоритету (тай-брейк)
-    rankingRules:         ['words','typo','proximity','attribute','sort','exactness'],
-    displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
-    // без одруківок на кодах/розмірах; знято ліміт 1000
-    typoTolerance:        { enabled:true, disableOnAttributes:['sku','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
-    pagination:           { maxTotalHits: 100000 }
-  });
-  await waitTask(s.taskUid);
+  await waitTask((await meili('PATCH','/indexes/'+TMP+'/settings', SETTINGS)).taskUid);
+  console.log('Заливаю у тимчасовий індекс…');
+  await uploadDocs(TMP, docs);
 
-  const BATCH = 1000;
-  for (let i=0;i<docs.length;i+=BATCH){
-    const part = docs.slice(i, i+BATCH);
-    const r = await meili('POST','/indexes/'+INDEX+'/documents', part);
-    await waitTask(r.taskUid);
-    console.log('Завантажено', Math.min(i+BATCH, docs.length), '/', docs.length);
+  const built = await docCount(TMP);
+  if (built == null || built < docs.length * 0.95) {
+    throw new Error('Тимчасовий індекс наповнився не повністю (' + built + '/' + docs.length + ') — підміну скасовано, живий пошук не чіпаємо.');
   }
-  console.log('Готово ✔ Оновлено товарів:', docs.length);
+
+  console.log('Атомарна підміна індексу…');
+  await waitTask((await meili('POST','/swap-indexes', [{ indexes: [INDEX, TMP] }])).taskUid);
+  await deleteIndex(TMP);                   // у TMP тепер старі дані — прибираємо
+  console.log('Готово ✔ Пошук оновлено:', docs.length, 'товарів (застарілі/зняті прибрано).');
 }
 
-module.exports = { toDocs, buildCategoryMap, normDims, dimsOf };
+module.exports = { toDocs, buildCategoryMap, normDims, dimsOf, assertFeedSane, assertCountsSane, SETTINGS };
 if (require.main === module) main().catch(function(e){ console.error('Помилка:', e.message); process.exit(1); });
