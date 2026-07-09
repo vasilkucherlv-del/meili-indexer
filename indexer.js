@@ -163,7 +163,7 @@ function assertCountsSane(newCount, currentCount, minDocs, maxDrop){
 // Telegram-сповіщення (heartbeat). Токен і chat_id — у Railway → Variables.
 // Якщо не задані — тихо нічого не робить. Помилка сповіщення НІКОЛИ не ламає індексацію.
 async function notify(text){
-  const token = process.env.TG_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+  const token = process.env.TG_BOT_TOKEN || process.env.TG_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
   const chat  = process.env.TG_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
   if (!token || !chat) return;
   try {

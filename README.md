@@ -30,7 +30,7 @@
 | `MEILI_INDEX` | назва індексу | `products` |
 | `MIN_DOCS` | мінімум товарів у фіді (нижче — стоп) | `1500` |
 | `MAX_DROP_RATIO` | макс. допустиме падіння кількості | `0.4` (40%) |
-| `TG_TOKEN` | токен Telegram-бота (для сповіщень) | — (вимкнено) |
+| `TG_BOT_TOKEN` | токен Telegram-бота (як у salesdrive-report) | — (вимкнено) |
 | `TG_CHAT_ID` | chat_id, куди слати сповіщення | — (вимкнено) |
 
 ## Сповіщення в Telegram (heartbeat)
