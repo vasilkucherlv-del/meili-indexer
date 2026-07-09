@@ -14,6 +14,23 @@ const INDEX      = process.env.MEILI_INDEX || 'products';
 
 function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
 
+// Нормалізація розмірів: символи множення (× · * x/х лат./кир.) між цифрами -> 'x'.
+// Роздільник зберігається, тому 30*52*10 -> 30x52x10, а парт-номер 305210 лишається окремим.
+function normDims(s){
+  s = String(s == null ? '' : s);
+  var prev;
+  do { prev = s; s = s.replace(/(\d)[ \t]*[*x×хХ·∙•⋅✕✖⨯]+[ \t]*(\d)/gi, '$1x$2'); } while (s !== prev);
+  return s;
+}
+// Витягує нормалізовані токени розмірів (напр. "30x52x10") з назви+опису.
+// Бере лише схоже на розмір: 2-4 числа по 1-4 цифри, з межами (не фрагмент моделі/коду).
+function dimsOf(text){
+  var n = normDims(String(text == null ? '' : text).toLowerCase());
+  var seen = {}, out = [], re = /(?<![\dx])\d{1,4}(?:x\d{1,4}){1,3}(?![\dx])/g, m;
+  while ((m = re.exec(n))) { if (!seen[m[0]]) { seen[m[0]] = 1; out.push(m[0]); } }
+  return out.join(' ');
+}
+
 async function readSource(src){
   if (/^https?:\/\//.test(src)) {
     const r = await fetch(src, { headers: {
@@ -71,6 +88,7 @@ function toDocs(xml){
       id:          String(o['@_id']),
       sku:         clean(o.vendorCode),
       name:        name,
+      dims:        dimsOf(name),
       vendor:      clean(o.vendor),
       category:    cat,
       categoryParent: parentName,
@@ -121,10 +139,16 @@ async function main(){
 
   console.log('Налаштовую пошукові поля…');
   const s = await meili('PATCH','/indexes/'+INDEX+'/settings', {
-    searchableAttributes: ['name','vendor','sku','category','description'],
+    // sku і dims — перші: пріоритет пошуку за артикулом і розміром
+    searchableAttributes: ['sku','dims','name','vendor','category','description'],
     filterableAttributes: ['vendor','available','category','categoryParent'],
-    sortableAttributes:   ['price'],
-    displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available']
+    sortableAttributes:   ['price','available'],
+    // релевантність веде; наявність — як сортування нижчого пріоритету (тай-брейк)
+    rankingRules:         ['words','typo','proximity','attribute','sort','exactness'],
+    displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
+    // без одруківок на кодах/розмірах; знято ліміт 1000
+    typoTolerance:        { enabled:true, disableOnAttributes:['sku','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+    pagination:           { maxTotalHits: 100000 }
   });
   await waitTask(s.taskUid);
 
