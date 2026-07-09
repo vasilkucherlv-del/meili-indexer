@@ -160,6 +160,25 @@ function assertCountsSane(newCount, currentCount, minDocs, maxDrop){
   }
 }
 
+// Telegram-сповіщення (heartbeat). Токен і chat_id — у Railway → Variables.
+// Якщо не задані — тихо нічого не робить. Помилка сповіщення НІКОЛИ не ламає індексацію.
+async function notify(text){
+  const token = process.env.TG_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+  const chat  = process.env.TG_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(function(){ ctrl.abort(); }, 8000);
+    await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: text, disable_web_page_preview: true }),
+      signal: ctrl.signal
+    });
+    clearTimeout(t);
+  } catch (e) { console.error('Telegram: не вдалось надіслати —', e.message); }
+}
+
 async function meili(method, path, body){
   const r = await fetch(MEILI_HOST + path, {
     method,
@@ -242,7 +261,13 @@ async function main(){
   await waitTask((await meili('POST','/swap-indexes', [{ indexes: [INDEX, TMP] }])).taskUid);
   await deleteIndex(TMP);                   // у TMP тепер старі дані — прибираємо
   console.log('Готово ✔ Пошук оновлено:', docs.length, 'товарів (застарілі/зняті прибрано).');
+  await notify('✅ lartek: пошук оновлено\nТоварів: ' + docs.length +
+    (current == null ? '' : ' (було ' + current + ')') + '\nКатегорій: ' + catset.size);
 }
 
 module.exports = { toDocs, buildCategoryMap, normDims, dimsOf, assertFeedSane, assertCountsSane, SETTINGS };
-if (require.main === module) main().catch(function(e){ console.error('Помилка:', e.message); process.exit(1); });
+if (require.main === module) main().catch(async function(e){
+  console.error('Помилка:', e.message);
+  await notify('❌ lartek: індексатор НЕ оновив пошук\n' + e.message + '\n(живий пошук лишився старим)');
+  process.exit(1);
+});
