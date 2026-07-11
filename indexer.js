@@ -11,6 +11,10 @@ const FEED       = process.argv[2] || process.env.FEED_URL || DEFAULT_FEED;
 const MEILI_HOST = (process.env.MEILI_HOST || DEFAULT_HOST).replace(/\/+$/, '');
 const MEILI_KEY  = process.env.MEILI_KEY || '';
 const INDEX      = process.env.MEILI_INDEX || 'products';
+// Сумісні моделі беремо з models-api (щоб пошук по сайту знаходив товар за номером
+// техніки, хоча списку вже нема в описі). Приховане поле: шукається, але не показується.
+const MODELS_API_URL = (process.env.MODELS_API_URL || '').replace(/\/+$/, '');
+const MODELS_API_KEY = process.env.MODELS_API_KEY || '';
 
 function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
 
@@ -86,8 +90,36 @@ function buildCategoryMap(shop){
   return map;
 }
 
+// Тягне сумісні моделі з models-api: Map(sku -> "MODEL1 MODEL2 …").
+// Fail-safe: якщо URL не заданий або сервіс недоступний — повертає порожню мапу
+// і індексація йде далі (пошук за моделлю просто не оновиться цього разу).
+async function fetchModelsMap(){
+  if (!MODELS_API_URL) { console.log('MODELS_API_URL не заданий — поле моделей пропускаю.'); return new Map(); }
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(function(){ ctrl.abort(); }, 60000);
+    const r = await fetch(MODELS_API_URL + '/api/export', {
+      headers: { 'X-Import-Key': MODELS_API_KEY, 'Accept': 'application/json' },
+      signal: ctrl.signal
+    });
+    clearTimeout(t);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const map = new Map();
+    for (const it of (d.items || [])) {
+      if (it && it.sku) map.set(String(it.sku).trim(), (it.models || []).join(' '));
+    }
+    console.log('Сумісність з models-api: товарів', map.size, '| рядків', d.count || '?');
+    return map;
+  } catch (e) {
+    console.error('models-api недоступний (' + e.message + ') — поле моделей не оновлюю цього разу.');
+    return new Map();
+  }
+}
+
 // XML -> масив документів для Meilisearch
-function toDocs(xml){
+function toDocs(xml, modelsMap){
+  const models = modelsMap || new Map();
   const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
   const data = parser.parse(xml);
   const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
@@ -112,10 +144,12 @@ function toDocs(xml){
       parentName = catMap[catMap[cid].parent].name;
     }
 
+    const skuKey = clean(o.vendorCode);
     return {
       id:          String(o['@_id']),
-      sku:         clean(o.vendorCode),
+      sku:         skuKey,
       name:        name,
+      models:      models.get(skuKey) || '',   // приховане пошукове поле (не показується)
       dims:        dimsOf(name),
       vendor:      clean(o.vendor),
       category:    cat,
@@ -130,15 +164,17 @@ function toDocs(xml){
 }
 
 const SETTINGS = {
-  // sku і dims — перші: пріоритет пошуку за артикулом і розміром
-  searchableAttributes: ['sku','dims','name','vendor','category','description'],
+  // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
+  // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
+  // номером техніки, але список НЕ віддається в браузер і ніде не показується.
+  searchableAttributes: ['sku','models','dims','name','vendor','category','description'],
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available'],
   // релевантність веде; наявність — як сортування нижчого пріоритету (тай-брейк)
   rankingRules:         ['words','typo','proximity','attribute','sort','exactness'],
   displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
-  // без одруківок на кодах/розмірах; знято ліміт 1000
-  typoTolerance:        { enabled:true, disableOnAttributes:['sku','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+  // без одруківок на кодах/розмірах/моделях; знято ліміт 1000
+  typoTolerance:        { enabled:true, disableOnAttributes:['sku','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
   pagination:           { maxTotalHits: 100000 }
 };
 
@@ -228,8 +264,10 @@ async function main(){
   console.log('Читаю фід…');
   const xml = await readSource(FEED);
   assertFeedSane(xml);                      // гард #1: це справді фід?
-  const docs = toDocs(xml);
-  console.log('Товарів у фіді:', docs.length);
+  const modelsMap = await fetchModelsMap(); // сумісні моделі з models-api (fail-safe)
+  const docs = toDocs(xml, modelsMap);
+  const withModels = docs.filter(function(d){ return d.models; }).length;
+  console.log('Товарів у фіді:', docs.length, '| з сумісними моделями:', withModels);
 
   const catset = new Set(docs.map(function(d){ return d.category; }).filter(Boolean));
   console.log('Категорій знайдено:', catset.size, '| напр.:', Array.from(catset).slice(0,5).join(' | '));
