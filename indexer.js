@@ -301,8 +301,6 @@ async function main(){
   await waitTask((await meili('POST','/swap-indexes', [{ indexes: [INDEX, TMP] }])).taskUid);
   await deleteIndex(TMP);                   // у TMP тепер старі дані — прибираємо
   console.log('Готово ✔ Пошук оновлено:', docs.length, 'товарів (застарілі/зняті прибрано).');
-  await notify('✅ lartek: пошук оновлено\nТоварів: ' + docs.length +
-    (current == null ? '' : ' (було ' + current + ')') + '\nКатегорій: ' + catset.size);
 }
 
 module.exports = { toDocs, buildCategoryMap, normDims, dimsOf, assertFeedSane, assertCountsSane, SETTINGS };
