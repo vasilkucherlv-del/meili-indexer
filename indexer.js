@@ -158,6 +158,7 @@ function toDocs(xml, modelsMap){
       url:         clean(o.url),
       picture:     clean(pic),
       available:   String(o['@_available']) === 'true',
+      instock:     String(o['@_available']) === 'true' ? 1 : 0,  // числове дублювання для правила ранжування
       description: desc
     };
   }).filter(function(d){ return d.id && d.name; });
@@ -169,9 +170,10 @@ const SETTINGS = {
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
   searchableAttributes: ['sku','models','dims','name','vendor','category','description'],
   filterableAttributes: ['vendor','available','category','categoryParent'],
-  sortableAttributes:   ['price','available'],
-  // релевантність веде; наявність — як сортування нижчого пріоритету (тай-брейк)
-  rankingRules:         ['words','typo','proximity','attribute','sort','exactness'],
+  sortableAttributes:   ['price','available','instock'],
+  // Наявність — ПЕРШЕ правило: товари «в наявності» завжди зверху, а релевантність
+  // (words/typo/…) упорядковує вже всередині кожної групи. Товари «немає» — нижче.
+  rankingRules:         ['instock:desc','words','typo','proximity','attribute','sort','exactness'],
   displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
   // без одруківок на кодах/розмірах/моделях; знято ліміт 1000
   typoTolerance:        { enabled:true, disableOnAttributes:['sku','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
