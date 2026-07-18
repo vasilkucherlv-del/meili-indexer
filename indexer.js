@@ -164,11 +164,72 @@ function toDocs(xml, modelsMap){
   }).filter(function(d){ return d.id && d.name; });
 }
 
+// Українські/російські написання брендів → латиниця, щоб пошук «бош», «самсунг»,
+// «ровента» знаходив Bosch, Samsung, Rowenta (у каталозі бренди записані латиницею).
+// Ключ = латиниця, значення = кириличні написання. Синоніми будуються В ОБИДВА боки.
+const BRAND_ALIASES = {
+  bosch: ['бош'],
+  siemens: ['сіменс', 'сименс'],
+  samsung: ['самсунг'],
+  whirlpool: ['вірпул', 'вирпул', 'вірлпул', 'вирлпул'],
+  indesit: ['індезіт', 'индезит'],
+  ariston: ['арістон', 'аристон'],
+  hotpoint: ['хотпоінт', 'хотпоинт'],
+  zanussi: ['занусі', 'зануссі', 'занусси'],
+  electrolux: ['електролюкс', 'электролюкс'],
+  aeg: ['аег'],
+  beko: ['беко'],
+  gorenje: ['горенє', 'горенье', 'гореньє'],
+  candy: ['кенді', 'канді', 'канди', 'кэнди'],
+  hoover: ['хувер'],
+  zelmer: ['зелмер'],
+  philips: ['філіпс', 'филипс'],
+  braun: ['браун'],
+  moulinex: ['мулінекс', 'мулинекс'],
+  tefal: ['тефаль', 'тефал'],
+  karcher: ['керхер', 'кёрхер', 'карчер'],
+  rowenta: ['ровента'],
+  xiaomi: ['сяомі', 'сяоми', 'ксіаомі', 'ксиоми'],
+  saturn: ['сатурн'],
+  elenberg: ['еленберг'],
+  kenwood: ['кенвуд'],
+  delonghi: ['делонгі', 'делонги', 'делонгхі'],
+  krups: ['крупс'],
+  panasonic: ['панасонік', 'панасоник'],
+  daewoo: ['деу', 'даево', 'дэу'],
+  atlant: ['атлант'],
+  nord: ['норд'],
+  snaige: ['снайге'],
+  miele: ['міле', 'миле', 'мієле'],
+  vestel: ['вестел', 'вестель'],
+  hansa: ['ханса', 'ганза'],
+  kaiser: ['кайзер'],
+  vitek: ['вітек', 'витек'],
+  scarlett: ['скарлет', 'скарлетт'],
+  polaris: ['поларіс', 'поларис'],
+  redmond: ['редмонд'],
+  makita: ['макіта', 'макита'],
+  dyson: ['дайсон'],
+  aurora: ['аврора', 'аурора'],
+  privileg: ['привілег', 'привилег'],
+  ignis: ['ігніс', 'игнис'],
+  bauknecht: ['баукнехт']
+};
+function buildBrandSynonyms(map) {
+  const syn = {};
+  const add = function (k, v) { (syn[k] = syn[k] || []).push(v); };
+  for (const lat in map) {
+    map[lat].forEach(function (cyr) { add(lat, cyr); add(cyr, lat); });
+  }
+  return syn;
+}
+
 const SETTINGS = {
   // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
   // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
   searchableAttributes: ['sku','models','dims','name','vendor','category','description'],
+  synonyms:             buildBrandSynonyms(BRAND_ALIASES),
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available','instock'],
   // Наявність — ПЕРШЕ правило: товари «в наявності» завжди зверху, а релевантність
