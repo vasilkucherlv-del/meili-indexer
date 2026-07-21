@@ -18,6 +18,21 @@ const MODELS_API_KEY = process.env.MODELS_API_KEY || '';
 
 function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
 
+// Значення характеристики(-к) offer за назвою (укр/рос варіанти). Кілька — через кому.
+function paramVal(o, names){
+  let ps = o && o.param; if (!ps) return '';
+  if (!Array.isArray(ps)) ps = [ps];
+  const want = names.map(function(n){ return n.toLowerCase(); });
+  const out = [];
+  ps.forEach(function(p){
+    const nm = clean(p && p['@_name']).toLowerCase();
+    if (want.indexOf(nm) < 0) return;
+    const v = clean(p && (p.__cdata != null ? p.__cdata : (p['#text'] != null ? p['#text'] : (typeof p === 'string' ? p : ''))));
+    if (v) out.push(v);
+  });
+  return out.join(', ');
+}
+
 // Канонічний розмір: групу «число (× число){1..3}» зводимо до ВПОРЯДКОВАНОГО набору
 // чисел через 'x', десятковий роздільник -> 'p'. Порядок і символ множення неважливі:
 //   12,5*5*32  =  5*12,5*32  =  5x12,5x32  ->  5x12p5x32
@@ -149,6 +164,9 @@ function toDocs(xml, modelsMap){
       id:          String(o['@_id']),
       sku:         skuKey,
       name:        name,
+      // Каталожний номер запчастини з характеристик — щоб пошук знаходив товар за ним.
+      partno:      paramVal(o, ['Каталожний номер запчастини', 'Каталожный номер запчасти',
+                                'Каталожный номер запчастини', 'Каталожний номер запчасти']),
       models:      models.get(skuKey) || '',   // приховане пошукове поле (не показується)
       dims:        dimsOf(name),
       vendor:      clean(o.vendor),
@@ -228,7 +246,7 @@ const SETTINGS = {
   // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
   // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
-  searchableAttributes: ['sku','models','dims','name','vendor','category','description'],
+  searchableAttributes: ['sku','partno','models','dims','name','vendor','category','description'],
   synonyms:             buildBrandSynonyms(BRAND_ALIASES),
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available','instock'],
@@ -237,7 +255,7 @@ const SETTINGS = {
   rankingRules:         ['instock:desc','words','typo','proximity','attribute','sort','exactness'],
   displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
   // без одруківок на кодах/розмірах/моделях; знято ліміт 1000
-  typoTolerance:        { enabled:true, disableOnAttributes:['sku','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+  typoTolerance:        { enabled:true, disableOnAttributes:['sku','partno','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
   pagination:           { maxTotalHits: 100000 }
 };
 
