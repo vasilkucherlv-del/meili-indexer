@@ -40,8 +40,8 @@ function paramVal(o, names){
 // Парт-номер 305210 (без роздільника) не чіпається; списки кодів через кому/плюс — теж.
 function normDims(s){
   s = String(s == null ? '' : s);
-  return s.replace(/(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, function(full){
-    var nums = full.split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*/i)
+  return s.replace(/(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯\/][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, function(full){
+    var nums = full.split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯\/][ \t]*/i)
       .map(function(t){ return parseFloat(t.replace(',', '.')); })
       .filter(function(v){ return !isNaN(v); });
     if (nums.length < 2) return full;
@@ -67,9 +67,9 @@ function dimCombos(nums){
 // Витягує токени розмірів (повний + усі підкомбінації) з назви.
 function dimsOf(text){
   var s = String(text == null ? '' : text).toLowerCase();
-  var seen = {}, out = [], re = /(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, m;
+  var seen = {}, out = [], re = /(\d+(?:[.,]\d+)?)((?:[ \t]*[*x×хХ·∙•⋅✕✖⨯\/][ \t]*\d+(?:[.,]\d+)?){1,3})/gi, m;
   while ((m = re.exec(s))) {
-    var nums = m[0].split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯][ \t]*/i)
+    var nums = m[0].split(/[ \t]*[*x×хХ·∙•⋅✕✖⨯\/][ \t]*/i)
       .map(function(t){ return parseFloat(t.replace(',', '.')); })
       .filter(function(v){ return !isNaN(v); });
     if (nums.length < 2) continue;
