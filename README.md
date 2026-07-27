@@ -99,7 +99,7 @@ API SalesDrive.
    | `SD_API_KEY` | ключ API SalesDrive (Налаштування → Форми → API) | — (обов'язково) |
    | `SD_DOMAIN` | домен кабінету | `komplektom.salesdrive.me` |
    | `SOURCE_FIELD` | машинна назва поля джерела | `dzereloZamovlenna` |
-   | `BINOTEL_KEY` / `BINOTEL_SECRET` | API-ключі з кабінету Binotel | — (обов'язково) |
+   | `BINOTEL_KEY` / `BINOTEL_SECRET` | API-ключі Binotel: запросити у персонального менеджера або на support@binotel.com (у кабінеті не видаються) | — (обов'язково) |
    | `NUMBER_SOURCE_MAP` | мапа «номер → джерело» (замість файлу) | — |
    | `LOOKBACK_DAYS` | за скільки днів обробляти заявки | `3` |
    | `MATCH_GRACE_MIN` | дзвінок пізніше заявки на ≤ стільки хв ще зараховується | `30` |

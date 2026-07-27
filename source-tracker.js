@@ -21,7 +21,7 @@ const path = require('path');
 const SD_DOMAIN   = (process.env.SD_DOMAIN || 'komplektom.salesdrive.me').replace(/^https?:\/\//, '').replace(/\/+$/, '');
 const SD_API_KEY  = process.env.SD_API_KEY || '';          // SalesDrive → Налаштування → Форми/API (ключ форми)
 const SOURCE_FIELD = process.env.SOURCE_FIELD || 'dzereloZamovlenna'; // машинна назва поля «Джерело замовлення»
-const BINOTEL_KEY    = process.env.BINOTEL_KEY || '';      // кабінет Binotel → Інтеграції → API
+const BINOTEL_KEY    = process.env.BINOTEL_KEY || '';      // видає менеджер Binotel або support@binotel.com (у кабінеті ключів немає)
 const BINOTEL_SECRET = process.env.BINOTEL_SECRET || '';
 const GRACE_MIN = parseInt(process.env.MATCH_GRACE_MIN || '30', 10); // дзвінок, що почався до заявки + стільки хвилин після, ще зараховується
 
