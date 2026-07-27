@@ -4,7 +4,8 @@
   "description": "Автооновлення пошуку Meilisearch з фіду Horoshop",
   "main": "indexer.js",
   "scripts": {
-    "start": "node indexer.js"
+    "start": "node indexer.js",
+    "source-tracker": "node source-tracker.js"
   },
   "engines": {
     "node": ">=18"
