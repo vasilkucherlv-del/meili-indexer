@@ -105,6 +105,26 @@ function buildCategoryMap(shop){
   return map;
 }
 
+// Одну модель кладемо в пошук у ТРЬОХ написаннях: як є, злито (IWSD51051UA)
+// і канонічно з пробілами (IWSD 51051 UA). У базі моделі записані неоднаково
+// (де з пробілами, де злито), а віджет пробує обидві фрази — без варіантів
+// перша ж фраза знаходила лише «свій» варіант написання і ховала решту товарів.
+function modelVariants(m){
+  const raw = String(m || '').trim();
+  if (!raw) return [];
+  const joined = raw.toUpperCase().replace(/[^0-9A-ZА-ЯЁІЇЄҐ]+/g, '');
+  // канонічний розбив — як canonAlnum у віджеті пошуку
+  const canon = raw.toUpperCase()
+    .replace(/([A-ZА-ЯЁІЇЄҐ])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-ZА-ЯЁІЇЄҐ])/g, '$1 $2')
+    .replace(/[^0-9A-ZА-ЯЁІЇЄҐ]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  const out = [raw];
+  if (joined && out.indexOf(joined) < 0) out.push(joined);
+  if (canon && out.indexOf(canon) < 0) out.push(canon);
+  return out;
+}
+
 // Тягне сумісні моделі з models-api: Map(sku -> "MODEL1 MODEL2 …").
 // Fail-safe: якщо URL не заданий або сервіс недоступний — повертає порожню мапу
 // і індексація йде далі (пошук за моделлю просто не оновиться цього разу).
@@ -122,7 +142,13 @@ async function fetchModelsMap(){
     const d = await r.json();
     const map = new Map();
     for (const it of (d.items || [])) {
-      if (it && it.sku) map.set(String(it.sku).trim(), (it.models || []).join(' '));
+      if (it && it.sku) {
+        const parts = [];
+        for (const m of (it.models || []))
+          for (const v of modelVariants(m))
+            if (parts.indexOf(v) < 0) parts.push(v);
+        map.set(String(it.sku).trim(), parts.join(' '));
+      }
     }
     console.log('Сумісність з models-api: товарів', map.size, '| рядків', d.count || '?');
     return map;
