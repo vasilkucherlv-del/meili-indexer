@@ -78,6 +78,24 @@ function dimsOf(text){
   return out.join(' ');
 }
 
+// Числові коди з крапкою (187.0003, 49.4020, 919.0088) Meilisearch ріже на два
+// слова — «187» і «0003». Через це початок коду не знайти: фраза «187.00» дає 0
+// (слова «00» в назві немає), а той самий запит без лапок тягне все, де є «187»
+// і будь-яке слово на «00» — лампочки, помпи тощо. Тому кладемо в приховане поле
+// `codes` ЗЛИТУ форму коду («1870003»): запит «18700» знаходить її за початком
+// слова — точно і без сміття. Дробові з одним знаком (13.5) не чіпаємо: це розмір.
+function codesOf(text){
+  var s = String(text == null ? '' : text);
+  // Межа зліва — щоб не почати з середини числа; праворуч забороняємо лише цифру
+  // (кома/дужка ПІСЛЯ коду — нормально: у назвах коди перелічені через кому).
+  var seen = {}, out = [], re = /(?<!\d)(\d{2,6})[.,](\d{2,6})(?!\d)/g, m;
+  while ((m = re.exec(s))) {
+    var tok = m[1] + m[2];
+    if (!seen[tok]) { seen[tok] = 1; out.push(tok); }
+  }
+  return out.join(' ');
+}
+
 async function readSource(src){
   if (/^https?:\/\//.test(src)) {
     const r = await fetch(src, { headers: {
@@ -186,15 +204,17 @@ function toDocs(xml, modelsMap){
     }
 
     const skuKey = clean(o.vendorCode);
+    const partno = paramVal(o, ['Каталожний номер запчастини', 'Каталожный номер запчасти',
+                               'Каталожный номер запчастини', 'Каталожний номер запчасти']);
     return {
       id:          String(o['@_id']),
       sku:         skuKey,
       name:        name,
       // Каталожний номер запчастини з характеристик — щоб пошук знаходив товар за ним.
-      partno:      paramVal(o, ['Каталожний номер запчастини', 'Каталожный номер запчасти',
-                                'Каталожный номер запчастини', 'Каталожний номер запчасти']),
+      partno:      partno,
       models:      models.get(skuKey) || '',   // приховане пошукове поле (не показується)
       dims:        dimsOf(name),
+      codes:       codesOf(name + ' ' + partno), // приховане: коди з крапкою без крапки
       vendor:      clean(o.vendor),
       category:    cat,
       categoryParent: parentName,
@@ -272,7 +292,7 @@ const SETTINGS = {
   // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
   // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
-  searchableAttributes: ['sku','partno','models','dims','name','vendor','category','description'],
+  searchableAttributes: ['sku','partno','models','dims','codes','name','vendor','category','description'],
   synonyms:             buildBrandSynonyms(BRAND_ALIASES),
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available','instock'],
@@ -281,7 +301,7 @@ const SETTINGS = {
   rankingRules:         ['instock:desc','words','typo','proximity','attribute','sort','exactness'],
   displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
   // без одруківок на кодах/розмірах/моделях; знято ліміт 1000
-  typoTolerance:        { enabled:true, disableOnAttributes:['sku','partno','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+  typoTolerance:        { enabled:true, disableOnAttributes:['sku','partno','models','dims','codes','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
   pagination:           { maxTotalHits: 100000 }
 };
 
