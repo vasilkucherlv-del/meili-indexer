@@ -5,9 +5,14 @@ const { XMLParser } = require('fast-xml-parser');
 
 // --- Налаштування (значення вже вписані; за потреби можна перевизначити через Variables) ---
 const DEFAULT_FEED = 'https://www.lartek.com.ua/content/export/def50f4a67a9cdf49099014837c8ba76.xml';
+const DEFAULT_FEED_RU = 'https://lartek.com.ua/content/export/4afcdcba6dc44bbcf68db6be51f8d018.xml';
 const DEFAULT_HOST = 'https://getmeilimeilisearchv190-production-7c60.up.railway.app';
 
 const FEED       = process.argv[2] || process.env.FEED_URL || DEFAULT_FEED;
+// Другий експорт Horoshop — той самий каталог, але назви російською (<name>);
+// українські там лежать у <name_ua>. Потрібен, щоб пошук знаходив товар і за
+// російською назвою. Порожнє значення просто вимикає цю частину.
+const FEED_RU    = process.env.FEED_RU_URL !== undefined ? process.env.FEED_RU_URL : DEFAULT_FEED_RU;
 const MEILI_HOST = (process.env.MEILI_HOST || DEFAULT_HOST).replace(/\/+$/, '');
 const MEILI_KEY  = process.env.MEILI_KEY || '';
 const INDEX      = process.env.MEILI_INDEX || 'products';
@@ -143,6 +148,36 @@ function modelVariants(m){
   return out;
 }
 
+// Тягне РОСІЙСЬКІ назви з окремого експорту Horoshop: Map(sku -> назва).
+// Навіщо: сайт має обидві мови, але основний фід віддає лише українські назви,
+// тож запит «Моторный блок для блендера» не знаходив нічого. Цей фід —
+// ДОДАТКОВЕ джерело: беремо з нього тільки назву, бо наявність там порожня
+// (available=""), а ціни/категорії лишаються за основним фідом.
+// Fail-safe: недоступний — індексація йде далі, поле просто не оновиться.
+async function fetchRuNames(){
+  if (!FEED_RU) { console.log('FEED_RU_URL не заданий — російські назви пропускаю.'); return new Map(); }
+  try {
+    const xml = await readSource(FEED_RU);
+    assertFeedSane(xml);
+    const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
+    const data = parser.parse(xml);
+    const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
+    let offers = shop.offers?.offer || [];
+    if (!Array.isArray(offers)) offers = [offers];
+    const map = new Map();
+    for (const o of offers) {
+      const sku = clean(o.vendorCode);
+      const nm  = clean(o.name && (o.name.__cdata ?? o.name));
+      if (sku && nm) map.set(sku, nm);
+    }
+    console.log('Російські назви: товарів', map.size);
+    return map;
+  } catch (e) {
+    console.error('Російський фід недоступний (' + e.message + ') — назви не оновлюю цього разу.');
+    return new Map();
+  }
+}
+
 // Тягне сумісні моделі з models-api: Map(sku -> "MODEL1 MODEL2 …").
 // Fail-safe: якщо URL не заданий або сервіс недоступний — повертає порожню мапу
 // і індексація йде далі (пошук за моделлю просто не оновиться цього разу).
@@ -177,8 +212,9 @@ async function fetchModelsMap(){
 }
 
 // XML -> масив документів для Meilisearch
-function toDocs(xml, modelsMap){
+function toDocs(xml, modelsMap, ruMap){
   const models = modelsMap || new Map();
+  const ruNames = ruMap || new Map();
   const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
   const data = parser.parse(xml);
   const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
@@ -213,6 +249,7 @@ function toDocs(xml, modelsMap){
       // Каталожний номер запчастини з характеристик — щоб пошук знаходив товар за ним.
       partno:      partno,
       models:      models.get(skuKey) || '',   // приховане пошукове поле (не показується)
+      name_ru:     ruNames.get(skuKey) || '', // приховане: назва російською (шукається, не показується)
       dims:        dimsOf(name),
       codes:       codesOf(name + ' ' + partno), // приховане: коди з крапкою без крапки
       vendor:      clean(o.vendor),
@@ -317,7 +354,7 @@ const SETTINGS = {
   // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
   // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
-  searchableAttributes: ['sku','partno','models','dims','codes','name','vendor','category','description'],
+  searchableAttributes: ['sku','partno','models','dims','codes','name','name_ru','vendor','category','description'],
   synonyms:             mergeSynonyms(buildBrandSynonyms(BRAND_ALIASES), buildBrandSynonyms(RU_ALIASES)),
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available','instock'],
@@ -417,9 +454,11 @@ async function main(){
   const xml = await readSource(FEED);
   assertFeedSane(xml);                      // гард #1: це справді фід?
   const modelsMap = await fetchModelsMap(); // сумісні моделі з models-api (fail-safe)
-  const docs = toDocs(xml, modelsMap);
+  const ruMap     = await fetchRuNames();   // російські назви з другого експорту (fail-safe)
+  const docs = toDocs(xml, modelsMap, ruMap);
   const withModels = docs.filter(function(d){ return d.models; }).length;
-  console.log('Товарів у фіді:', docs.length, '| з сумісними моделями:', withModels);
+  const withRu     = docs.filter(function(d){ return d.name_ru; }).length;
+  console.log('Товарів у фіді:', docs.length, '| з сумісними моделями:', withModels, '| з рос. назвою:', withRu);
 
   const catset = new Set(docs.map(function(d){ return d.category; }).filter(Boolean));
   console.log('Категорій знайдено:', catset.size, '| напр.:', Array.from(catset).slice(0,5).join(' | '));
