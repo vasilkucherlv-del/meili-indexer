@@ -5,9 +5,14 @@ const { XMLParser } = require('fast-xml-parser');
 
 // --- Налаштування (значення вже вписані; за потреби можна перевизначити через Variables) ---
 const DEFAULT_FEED = 'https://www.lartek.com.ua/content/export/def50f4a67a9cdf49099014837c8ba76.xml';
+const DEFAULT_FEED_RU = 'https://lartek.com.ua/content/export/4afcdcba6dc44bbcf68db6be51f8d018.xml';
 const DEFAULT_HOST = 'https://getmeilimeilisearchv190-production-7c60.up.railway.app';
 
 const FEED       = process.argv[2] || process.env.FEED_URL || DEFAULT_FEED;
+// Другий експорт Horoshop — той самий каталог, але назви російською (<name>);
+// українські там лежать у <name_ua>. Потрібен, щоб пошук знаходив товар і за
+// російською назвою. Порожнє значення просто вимикає цю частину.
+const FEED_RU    = process.env.FEED_RU_URL !== undefined ? process.env.FEED_RU_URL : DEFAULT_FEED_RU;
 const MEILI_HOST = (process.env.MEILI_HOST || DEFAULT_HOST).replace(/\/+$/, '');
 const MEILI_KEY  = process.env.MEILI_KEY || '';
 const INDEX      = process.env.MEILI_INDEX || 'products';
@@ -78,6 +83,24 @@ function dimsOf(text){
   return out.join(' ');
 }
 
+// Числові коди з крапкою (187.0003, 49.4020, 919.0088) Meilisearch ріже на два
+// слова — «187» і «0003». Через це початок коду не знайти: фраза «187.00» дає 0
+// (слова «00» в назві немає), а той самий запит без лапок тягне все, де є «187»
+// і будь-яке слово на «00» — лампочки, помпи тощо. Тому кладемо в приховане поле
+// `codes` ЗЛИТУ форму коду («1870003»): запит «18700» знаходить її за початком
+// слова — точно і без сміття. Дробові з одним знаком (13.5) не чіпаємо: це розмір.
+function codesOf(text){
+  var s = String(text == null ? '' : text);
+  // Межа зліва — щоб не почати з середини числа; праворуч забороняємо лише цифру
+  // (кома/дужка ПІСЛЯ коду — нормально: у назвах коди перелічені через кому).
+  var seen = {}, out = [], re = /(?<!\d)(\d{2,6})[.,](\d{2,6})(?!\d)/g, m;
+  while ((m = re.exec(s))) {
+    var tok = m[1] + m[2];
+    if (!seen[tok]) { seen[tok] = 1; out.push(tok); }
+  }
+  return out.join(' ');
+}
+
 async function readSource(src){
   if (/^https?:\/\//.test(src)) {
     const r = await fetch(src, { headers: {
@@ -125,6 +148,36 @@ function modelVariants(m){
   return out;
 }
 
+// Тягне РОСІЙСЬКІ назви з окремого експорту Horoshop: Map(sku -> назва).
+// Навіщо: сайт має обидві мови, але основний фід віддає лише українські назви,
+// тож запит «Моторный блок для блендера» не знаходив нічого. Цей фід —
+// ДОДАТКОВЕ джерело: беремо з нього тільки назву, бо наявність там порожня
+// (available=""), а ціни/категорії лишаються за основним фідом.
+// Fail-safe: недоступний — індексація йде далі, поле просто не оновиться.
+async function fetchRuNames(){
+  if (!FEED_RU) { console.log('FEED_RU_URL не заданий — російські назви пропускаю.'); return new Map(); }
+  try {
+    const xml = await readSource(FEED_RU);
+    assertFeedSane(xml);
+    const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
+    const data = parser.parse(xml);
+    const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
+    let offers = shop.offers?.offer || [];
+    if (!Array.isArray(offers)) offers = [offers];
+    const map = new Map();
+    for (const o of offers) {
+      const sku = clean(o.vendorCode);
+      const nm  = clean(o.name && (o.name.__cdata ?? o.name));
+      if (sku && nm) map.set(sku, nm);
+    }
+    console.log('Російські назви: товарів', map.size);
+    return map;
+  } catch (e) {
+    console.error('Російський фід недоступний (' + e.message + ') — назви не оновлюю цього разу.');
+    return new Map();
+  }
+}
+
 // Тягне сумісні моделі з models-api: Map(sku -> "MODEL1 MODEL2 …").
 // Fail-safe: якщо URL не заданий або сервіс недоступний — повертає порожню мапу
 // і індексація йде далі (пошук за моделлю просто не оновиться цього разу).
@@ -159,8 +212,9 @@ async function fetchModelsMap(){
 }
 
 // XML -> масив документів для Meilisearch
-function toDocs(xml, modelsMap){
+function toDocs(xml, modelsMap, ruMap){
   const models = modelsMap || new Map();
+  const ruNames = ruMap || new Map();
   const parser = new XMLParser({ ignoreAttributes:false, attributeNamePrefix:'@_', cdataPropName:'__cdata', parseTagValue:false });
   const data = parser.parse(xml);
   const shop = (data && (data.yml_catalog?.shop || data.shop)) || {};
@@ -186,15 +240,18 @@ function toDocs(xml, modelsMap){
     }
 
     const skuKey = clean(o.vendorCode);
+    const partno = paramVal(o, ['Каталожний номер запчастини', 'Каталожный номер запчасти',
+                               'Каталожный номер запчастини', 'Каталожний номер запчасти']);
     return {
       id:          String(o['@_id']),
       sku:         skuKey,
       name:        name,
       // Каталожний номер запчастини з характеристик — щоб пошук знаходив товар за ним.
-      partno:      paramVal(o, ['Каталожний номер запчастини', 'Каталожный номер запчасти',
-                                'Каталожный номер запчастини', 'Каталожний номер запчасти']),
+      partno:      partno,
       models:      models.get(skuKey) || '',   // приховане пошукове поле (не показується)
+      name_ru:     ruNames.get(skuKey) || '', // приховане: назва російською (шукається, не показується)
       dims:        dimsOf(name),
+      codes:       codesOf(name + ' ' + partno), // приховане: коди з крапкою без крапки
       vendor:      clean(o.vendor),
       category:    cat,
       categoryParent: parentName,
@@ -259,6 +316,24 @@ const BRAND_ALIASES = {
   ignis: ['ігніс', 'игнис'],
   bauknecht: ['баукнехт']
 };
+// Назви товарів у каталозі українські, а питають часто російською. Більшість
+// слів рятує толерантність до одруківок («подшипник» знаходить «підшипник»),
+// але там, де слова розходяться сильно, пошук майже сліпне. Заміряно на
+// бойовому індексі, у дужках — скільки знаходить рос./укр. варіант:
+const RU_ALIASES = {
+  'двигун':       ['двигатель', 'двигателя'],              //   2 / 155
+  'ущільнювач':   ['уплотнитель', 'уплотнителя', 'уплотнительная'], // 2 / 61
+  'скло':         ['стекло', 'стекла'],                    //   3 / 21
+  'тен':          ['тэн', 'тэна', 'тэны'],                 // 111 / 272
+  'тримач':       ['держатель', 'держателя'],              //   0 / 59
+  'кріплення':    ['крепление', 'крепления'],              //   3 / 155
+  'візок':        ['тележка', 'тележки'],                  //  13 / 40
+  'пральної':     ['стиральной', 'стиральная', 'стиралки'],//  13 / 526
+  'посудомийної': ['посудомоечной', 'посудомоечная', 'посудомойки'], // 1 / 30
+  'кавоварки':    ['кофеварки', 'кофеварка'],              //   0 / 183
+  'праски':       ['утюга', 'утюг'],                       //   0 / 16
+  'подрібнювача': ['измельчителя', 'измельчитель'],        //   0 / 38
+};
 function buildBrandSynonyms(map) {
   const syn = {};
   const add = function (k, v) { (syn[k] = syn[k] || []).push(v); };
@@ -267,13 +342,20 @@ function buildBrandSynonyms(map) {
   }
   return syn;
 }
+// Синоніми з кількох словників в один (ключі можуть повторюватись).
+function mergeSynonyms() {
+  const out = {};
+  for (const m of arguments)
+    for (const k in m) out[k] = (out[k] || []).concat(m[k]);
+  return out;
+}
 
 const SETTINGS = {
   // sku, models і dims — перші: пріоритет пошуку за артикулом, сумісною моделлю і розміром.
   // 'models' — приховане поле (є в searchable, немає в displayed): знаходить товар за
   // номером техніки, але список НЕ віддається в браузер і ніде не показується.
-  searchableAttributes: ['sku','partno','models','dims','name','vendor','category','description'],
-  synonyms:             buildBrandSynonyms(BRAND_ALIASES),
+  searchableAttributes: ['sku','partno','models','dims','codes','name','name_ru','vendor','category','description'],
+  synonyms:             mergeSynonyms(buildBrandSynonyms(BRAND_ALIASES), buildBrandSynonyms(RU_ALIASES)),
   filterableAttributes: ['vendor','available','category','categoryParent'],
   sortableAttributes:   ['price','available','instock'],
   // Наявність — ПЕРШЕ правило: товари «в наявності» завжди зверху, а релевантність
@@ -281,7 +363,7 @@ const SETTINGS = {
   rankingRules:         ['instock:desc','words','typo','proximity','attribute','sort','exactness'],
   displayedAttributes:  ['id','sku','name','vendor','category','categoryParent','price','url','picture','available'],
   // без одруківок на кодах/розмірах/моделях; знято ліміт 1000
-  typoTolerance:        { enabled:true, disableOnAttributes:['sku','partno','models','dims','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
+  typoTolerance:        { enabled:true, disableOnAttributes:['sku','partno','models','dims','codes','description'], minWordSizeForTypos:{ oneTypo:5, twoTypos:9 } },
   pagination:           { maxTotalHits: 100000 }
 };
 
@@ -372,9 +454,11 @@ async function main(){
   const xml = await readSource(FEED);
   assertFeedSane(xml);                      // гард #1: це справді фід?
   const modelsMap = await fetchModelsMap(); // сумісні моделі з models-api (fail-safe)
-  const docs = toDocs(xml, modelsMap);
+  const ruMap     = await fetchRuNames();   // російські назви з другого експорту (fail-safe)
+  const docs = toDocs(xml, modelsMap, ruMap);
   const withModels = docs.filter(function(d){ return d.models; }).length;
-  console.log('Товарів у фіді:', docs.length, '| з сумісними моделями:', withModels);
+  const withRu     = docs.filter(function(d){ return d.name_ru; }).length;
+  console.log('Товарів у фіді:', docs.length, '| з сумісними моделями:', withModels, '| з рос. назвою:', withRu);
 
   const catset = new Set(docs.map(function(d){ return d.category; }).filter(Boolean));
   console.log('Категорій знайдено:', catset.size, '| напр.:', Array.from(catset).slice(0,5).join(' | '));
